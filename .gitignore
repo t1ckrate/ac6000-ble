@@ -1,0 +1,16 @@
+# Jeton d'appairage (spécifique à l'appareil, privé)
+ac6000_token.json
+
+# Captures Bluetooth brutes (contiennent des données perso : adresses BT, etc.)
+*.pklg
+
+# Logs de capture
+*.jsonl
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store

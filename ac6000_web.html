@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AC6000 Web</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --line:#272b36; --txt:#e6e9ef;
+    --muted:#9aa3b2; --accent:#4ea1ff; --ok:#39d98a; --warn:#ffb84e; --err:#ff6b6b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;
+       background:var(--bg);color:var(--txt);padding:16px;max-width:860px;margin:auto}
+  h1{font-size:18px;margin:0 0 4px}
+  .sub{color:var(--muted);margin:0 0 16px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+         padding:14px;margin-bottom:14px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  button{background:var(--accent);color:#06101f;border:0;border-radius:8px;
+         padding:9px 14px;font-weight:600;cursor:pointer}
+  button.secondary{background:#232836;color:var(--txt);border:1px solid var(--line)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  input,select{background:#0e1117;color:var(--txt);border:1px solid var(--line);
+         border-radius:7px;padding:8px}
+  label{color:var(--muted);font-size:12px;margin-right:4px}
+  .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;
+        border:1px solid var(--line)}
+  .pill.on{color:var(--ok);border-color:var(--ok)}
+  .pill.off{color:var(--muted)}
+  table{width:100%;border-collapse:collapse;margin-top:8px}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600;font-size:12px}
+  .shot{font-size:28px;font-weight:700}
+  .shot small{font-size:14px;color:var(--muted);font-weight:400}
+  #log{font-family:ui-monospace,Menlo,monospace;font-size:12px;white-space:pre-wrap;
+       background:#0b0d12;border:1px solid var(--line);border-radius:8px;padding:10px;
+       height:200px;overflow:auto;color:#aeb6c4}
+  .k{color:var(--muted)}
+</style>
+</head>
+<body>
+  <h1>AC6000 — contrôle Web Bluetooth</h1>
+  <p class="sub">Chronographe Acetech AC6000-BT. Chrome/Edge desktop ou Android (pas iOS).</p>
+
+  <div class="panel">
+    <div class="row">
+      <button id="connect">Connecter</button>
+      <button id="disconnect" class="secondary" disabled>Déconnecter</button>
+      <span id="state" class="pill off">déconnecté</span>
+      <span id="auth" class="pill off">non authentifié</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="shot" id="lastShot">—<small> dernier tir</small></div>
+    <div class="k" id="shotMeta"></div>
+  </div>
+
+  <div class="panel">
+    <div class="row" style="justify-content:space-between">
+      <strong>Table de munitions</strong>
+      <button id="readAmmo" class="secondary" disabled>Lire la table</button>
+    </div>
+    <table id="ammoTable"><thead><tr><th>Slot</th><th>Poids</th><th></th></tr></thead>
+      <tbody></tbody></table>
+  </div>
+
+  <div class="panel">
+    <strong>Régler un grammage</strong>
+    <div class="row" style="margin-top:8px">
+      <label>Slot</label>
+      <select id="setSlot"><option>1</option><option>2</option><option selected>3</option>
+        <option>4</option><option>5</option></select>
+      <label>Poids (g)</label>
+      <input id="setGrams" type="number" step="0.01" min="0.1" max="0.6" value="0.25" style="width:90px">
+      <button id="setWeight" disabled>Écrire + re-sélectionner</button>
+    </div>
+    <p class="k" style="margin:8px 0 0">Écrit le poids (0x53) puis re-sélectionne (0x59 autre slot → retour) pour que le chrono applique.</p>
+  </div>
+
+  <div class="panel">
+    <div class="row" style="justify-content:space-between">
+      <strong>Journal</strong><button id="clearLog" class="secondary">Vider</button>
+    </div>
+    <div id="log"></div>
+  </div>
+
+<script>
+const UUID = {
+  svcNotify:'5cde0c3d-7b1d-4352-94bb-02269c9f42b5',
+  chNotify :'3337e46e-f79e-4ff5-9a49-77c36d170c62',
+  svcWrite :'53c47fe1-6c22-4ea6-99c7-7b6325ec75b9',
+  chWrite  :'9c6aa1ee-b4b9-44a1-ba45-1558c9109b4c',
+};
+const $ = s => document.querySelector(s);
+const hex = b => [...b].map(x=>x.toString(16).padStart(2,'0')).join('');
+function log(msg){ const el=$('#log'); const t=new Date().toLocaleTimeString();
+  el.textContent += `[${t}] ${msg}\n`; el.scrollTop=el.scrollHeight; }
+
+// ---- Protocole AC6000 (identique au script Python) ----
+const sum = a => a.reduce((x,y)=>x+y,0);
+const checksum = body => (0x8b + sum(body)) & 0xff;            // commandes générales
+function build(cmd, payload=[]){
+  const len = 3 + payload.length + 1;
+  const body = [len, cmd, ...payload];
+  return Uint8Array.from([0xAA, ...body, checksum(body)]);
+}
+function buildHello(token=[0x00,0x00]){                        // 0x4B : checksum variante (AA compris)
+  const frame = [0xAA, 6, 0x4B, ...token];
+  return Uint8Array.from([...frame, sum(frame)&0xff]);
+}
+const buildReadAmmo = (slot,g=1) => build(0x47,[g,slot]);
+const buildSelect   = (slot,g=1) => build(0x59,[g,slot]);
+function buildSetWeight(slot,grams,group=0x41,field2=600){
+  const w = Math.round(grams*100);
+  return build(0x53,[0x00,group,slot, field2&0xff,(field2>>8)&0xff, w&0xff,(w>>8)&0xff]);
+}
+function parseAmmo(f){                                          // 0x47 / 0x53, 11 octets
+  if(f.length<11 || (f[2]!==0x47 && f[2]!==0x53)) return null;
+  const p=f.slice(3,-1);
+  return {group:p[1], slot:p[2], field2:p[3]|(p[4]<<8), grams:(p[5]|(p[6]<<8))/100};
+}
+function parseShot(f){                                          // 0x52
+  if(f[2]!==0x52) return null;
+  const p=f.slice(3,-1);
+  const raw = p[2]|(p[3]<<8)|(p[4]<<16)|(p[5]<<24);
+  return {mps:raw/100, fps:raw/100*3.28084, raw};
+}
+
+// ---- État BLE ----
+let device, writeCh, ammo={}, helloResolve=null;
+const TOKEN_KEY='ac6000_token';
+const getToken = () => localStorage.getItem(TOKEN_KEY) || 'df02';
+const setToken = t => { try{localStorage.setItem(TOKEN_KEY,t);}catch(e){} };
+
+function setState(connected){
+  $('#state').textContent = connected?'connecté':'déconnecté';
+  $('#state').className = 'pill '+(connected?'on':'off');
+  $('#disconnect').disabled = !connected;
+  $('#connect').disabled = connected;
+  for(const id of ['#readAmmo','#setWeight']) $(id).disabled=!connected;
+}
+function setAuth(ok){
+  $('#auth').textContent = ok?'authentifié':'non authentifié';
+  $('#auth').className = 'pill '+(ok?'on':'off');
+}
+
+async function write(frame,label){ await writeCh.writeValueWithoutResponse(frame);
+  log(`→ ${label}: ${hex(frame)}`); }
+
+function onNotify(ev){
+  const f = new Uint8Array(ev.target.value.buffer);
+  const shot = parseShot(f);
+  if(shot){
+    $('#lastShot').innerHTML = `${shot.mps.toFixed(2)} m/s <small>${shot.fps.toFixed(1)} fps</small>`;
+    $('#shotMeta').textContent = `brut=${shot.raw}  (trame ${hex(f)})`;
+    log(`★ TIR ${shot.mps.toFixed(2)} m/s / ${shot.fps.toFixed(1)} fps`);
+  }
+  if(f[0]===0xAA && f[2]===0x4B){ setToken(hex(f.slice(3,-1))); if(helloResolve)helloResolve(); }
+  if(f[0]===0xAA && f[2]===0x41){ if(helloResolve)helloResolve(); }  // STATUS = ack
+  const rec = parseAmmo(f);
+  if(rec){ ammo[rec.slot]=rec; renderAmmo(); }
+  if(!shot) log(`← ${hex(f)}`);
+}
+
+function waitHello(ms){ return new Promise(res=>{
+  let done=false; helloResolve=()=>{if(!done){done=true;res(true);}};
+  setTimeout(()=>{if(!done){done=true;res(false);}},ms);
+});}
+
+async function authenticate(){
+  const token = getToken();
+  await write(buildHello([...Uint8Array.from(token.match(/../g).map(h=>parseInt(h,16)))]),
+              `HELLO (jeton ${token})`);
+  if(await waitHello(3000)){ setAuth(true); log(`Authentifié avec le jeton ${token}.`); return; }
+  log('Pas d\'ack ; appairage à froid…');
+  for(let i=0;i<8;i++){ await write(buildHello(),`APPAIRAGE (${i+1})`);
+    if(await waitHello(3000)){ setAuth(true); log(`Jeton mémorisé : ${getToken()}`); return; } }
+  log('Échec appairage.');
+}
+
+async function connect(){
+  try{
+    device = await navigator.bluetooth.requestDevice({
+      filters:[{namePrefix:'AC6000'}],
+      optionalServices:[UUID.svcNotify, UUID.svcWrite],
+    });
+    device.addEventListener('gattserverdisconnected',()=>{setState(false);setAuth(false);log('Déconnecté.');});
+    log(`Connexion à ${device.name}…`);
+    const server = await device.gatt.connect();
+    const nSvc = await server.getPrimaryService(UUID.svcNotify);
+    const nCh  = await nSvc.getCharacteristic(UUID.chNotify);
+    await nCh.startNotifications();
+    nCh.addEventListener('characteristicvaluechanged', onNotify);
+    const wSvc = await server.getPrimaryService(UUID.svcWrite);
+    writeCh = await wSvc.getCharacteristic(UUID.chWrite);
+    setState(true); log('Connecté, notifications actives.');
+    await authenticate();
+  }catch(e){ log('Erreur: '+e.message); }
+}
+
+function renderAmmo(){
+  const tb=$('#ammoTable tbody'); tb.innerHTML='';
+  for(const s of Object.keys(ammo).sort()){
+    const r=ammo[s];
+    tb.insertAdjacentHTML('beforeend',
+      `<tr><td>${s}</td><td>${r.grams.toFixed(2)} g</td>
+       <td><button class="secondary sel" data-slot="${s}">sélectionner</button></td></tr>`);
+  }
+  tb.querySelectorAll('.sel').forEach(b=>b.onclick=async()=>{
+    await write(buildSelect(+b.dataset.slot),`SELECT slot ${b.dataset.slot}`); });
+}
+
+async function readAmmo(){ ammo={}; renderAmmo();
+  for(let s=1;s<=5;s++){ await write(buildReadAmmo(s),`READ ammo ${s}`); await new Promise(r=>setTimeout(r,200)); } }
+
+async function setWeight(){
+  const slot=+$('#setSlot').value, grams=parseFloat($('#setGrams').value);
+  const cur = ammo[slot]||{group:0x41,field2:600};
+  await write(buildSetWeight(slot,grams,cur.group,cur.field2),`SET slot ${slot} → ${grams} g`);
+  await new Promise(r=>setTimeout(r,250));
+  const other = [1,2,3,4,5].find(x=>x!==slot);
+  await write(buildSelect(other),`SELECT autre ${other}`); await new Promise(r=>setTimeout(r,250));
+  await write(buildSelect(slot),`SELECT retour ${slot}`);   await new Promise(r=>setTimeout(r,250));
+  await readAmmo();
+}
+
+$('#connect').onclick=connect;
+$('#disconnect').onclick=()=>device&&device.gatt.disconnect();
+$('#readAmmo').onclick=readAmmo;
+$('#setWeight').onclick=setWeight;
+$('#clearLog').onclick=()=>$('#log').textContent='';
+
+if(!navigator.bluetooth){
+  log('Web Bluetooth indisponible : utilise Chrome/Edge sur desktop ou Android (pas iOS), en https/localhost.');
+  $('#connect').disabled=true;
+}
+</script>
+</body>
+</html>
