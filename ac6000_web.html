@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -40,48 +40,48 @@
 </style>
 </head>
 <body>
-  <h1>AC6000 — contrôle Web Bluetooth</h1>
-  <p class="sub">Chronographe Acetech AC6000-BT. Chrome/Edge desktop ou Android (pas iOS).</p>
+  <h1>AC6000 — Web Bluetooth control</h1>
+  <p class="sub">Acetech AC6000-BT chronograph. Chrome/Edge on desktop or Android (not iOS).</p>
 
   <div class="panel">
     <div class="row">
-      <button id="connect">Connecter</button>
-      <button id="disconnect" class="secondary" disabled>Déconnecter</button>
-      <span id="state" class="pill off">déconnecté</span>
-      <span id="auth" class="pill off">non authentifié</span>
+      <button id="connect">Connect</button>
+      <button id="disconnect" class="secondary" disabled>Disconnect</button>
+      <span id="state" class="pill off">disconnected</span>
+      <span id="auth" class="pill off">not authenticated</span>
     </div>
   </div>
 
   <div class="panel">
-    <div class="shot" id="lastShot">—<small> dernier tir</small></div>
+    <div class="shot" id="lastShot">—<small> last shot</small></div>
     <div class="k" id="shotMeta"></div>
   </div>
 
   <div class="panel">
     <div class="row" style="justify-content:space-between">
-      <strong>Table de munitions</strong>
-      <button id="readAmmo" class="secondary" disabled>Lire la table</button>
+      <strong>Ammo table</strong>
+      <button id="readAmmo" class="secondary" disabled>Read table</button>
     </div>
-    <table id="ammoTable"><thead><tr><th>Slot</th><th>Poids</th><th></th></tr></thead>
+    <table id="ammoTable"><thead><tr><th>Slot</th><th>Weight</th><th></th></tr></thead>
       <tbody></tbody></table>
   </div>
 
   <div class="panel">
-    <strong>Régler un grammage</strong>
+    <strong>Set a weight</strong>
     <div class="row" style="margin-top:8px">
       <label>Slot</label>
       <select id="setSlot"><option>1</option><option>2</option><option selected>3</option>
         <option>4</option><option>5</option></select>
-      <label>Poids (g)</label>
+      <label>Weight (g)</label>
       <input id="setGrams" type="number" step="0.01" min="0.1" max="0.6" value="0.25" style="width:90px">
-      <button id="setWeight" disabled>Écrire + re-sélectionner</button>
+      <button id="setWeight" disabled>Write + re-select</button>
     </div>
-    <p class="k" style="margin:8px 0 0">Écrit le poids (0x53) puis re-sélectionne (0x59 autre slot → retour) pour que le chrono applique.</p>
+    <p class="k" style="margin:8px 0 0">Writes the weight (0x53) then re-selects (0x59 other slot → back) so the chrono applies it.</p>
   </div>
 
   <div class="panel">
     <div class="row" style="justify-content:space-between">
-      <strong>Journal</strong><button id="clearLog" class="secondary">Vider</button>
+      <strong>Log</strong><button id="clearLog" class="secondary">Clear</button>
     </div>
     <div id="log"></div>
   </div>
@@ -98,15 +98,15 @@ const hex = b => [...b].map(x=>x.toString(16).padStart(2,'0')).join('');
 function log(msg){ const el=$('#log'); const t=new Date().toLocaleTimeString();
   el.textContent += `[${t}] ${msg}\n`; el.scrollTop=el.scrollHeight; }
 
-// ---- Protocole AC6000 (identique au script Python) ----
+// ---- AC6000 protocol (same as the Python script) ----
 const sum = a => a.reduce((x,y)=>x+y,0);
-const checksum = body => (0x8b + sum(body)) & 0xff;            // commandes générales
+const checksum = body => (0x8b + sum(body)) & 0xff;            // general commands
 function build(cmd, payload=[]){
   const len = 3 + payload.length + 1;
   const body = [len, cmd, ...payload];
   return Uint8Array.from([0xAA, ...body, checksum(body)]);
 }
-function buildHello(token=[0x00,0x00]){                        // 0x4B : checksum variante (AA compris)
+function buildHello(token=[0x00,0x00]){                        // 0x4B: checksum variant (AA included)
   const frame = [0xAA, 6, 0x4B, ...token];
   return Uint8Array.from([...frame, sum(frame)&0xff]);
 }
@@ -116,7 +116,7 @@ function buildSetWeight(slot,grams,group=0x41,field2=600){
   const w = Math.round(grams*100);
   return build(0x53,[0x00,group,slot, field2&0xff,(field2>>8)&0xff, w&0xff,(w>>8)&0xff]);
 }
-function parseAmmo(f){                                          // 0x47 / 0x53, 11 octets
+function parseAmmo(f){                                          // 0x47 / 0x53, 11 bytes
   if(f.length<11 || (f[2]!==0x47 && f[2]!==0x53)) return null;
   const p=f.slice(3,-1);
   return {group:p[1], slot:p[2], field2:p[3]|(p[4]<<8), grams:(p[5]|(p[6]<<8))/100};
@@ -128,21 +128,21 @@ function parseShot(f){                                          // 0x52
   return {mps:raw/100, fps:raw/100*3.28084, raw};
 }
 
-// ---- État BLE ----
+// ---- BLE state ----
 let device, writeCh, ammo={}, helloResolve=null;
 const TOKEN_KEY='ac6000_token';
 const getToken = () => localStorage.getItem(TOKEN_KEY) || 'df02';
 const setToken = t => { try{localStorage.setItem(TOKEN_KEY,t);}catch(e){} };
 
 function setState(connected){
-  $('#state').textContent = connected?'connecté':'déconnecté';
+  $('#state').textContent = connected?'connected':'disconnected';
   $('#state').className = 'pill '+(connected?'on':'off');
   $('#disconnect').disabled = !connected;
   $('#connect').disabled = connected;
   for(const id of ['#readAmmo','#setWeight']) $(id).disabled=!connected;
 }
 function setAuth(ok){
-  $('#auth').textContent = ok?'authentifié':'non authentifié';
+  $('#auth').textContent = ok?'authenticated':'not authenticated';
   $('#auth').className = 'pill '+(ok?'on':'off');
 }
 
@@ -154,8 +154,8 @@ function onNotify(ev){
   const shot = parseShot(f);
   if(shot){
     $('#lastShot').innerHTML = `${shot.mps.toFixed(2)} m/s <small>${shot.fps.toFixed(1)} fps</small>`;
-    $('#shotMeta').textContent = `brut=${shot.raw}  (trame ${hex(f)})`;
-    log(`★ TIR ${shot.mps.toFixed(2)} m/s / ${shot.fps.toFixed(1)} fps`);
+    $('#shotMeta').textContent = `raw=${shot.raw}  (frame ${hex(f)})`;
+    log(`★ SHOT ${shot.mps.toFixed(2)} m/s / ${shot.fps.toFixed(1)} fps`);
   }
   if(f[0]===0xAA && f[2]===0x4B){ setToken(hex(f.slice(3,-1))); if(helloResolve)helloResolve(); }
   if(f[0]===0xAA && f[2]===0x41){ if(helloResolve)helloResolve(); }  // STATUS = ack
@@ -172,12 +172,12 @@ function waitHello(ms){ return new Promise(res=>{
 async function authenticate(){
   const token = getToken();
   await write(buildHello([...Uint8Array.from(token.match(/../g).map(h=>parseInt(h,16)))]),
-              `HELLO (jeton ${token})`);
-  if(await waitHello(3000)){ setAuth(true); log(`Authentifié avec le jeton ${token}.`); return; }
-  log('Pas d\'ack ; appairage à froid…');
-  for(let i=0;i<8;i++){ await write(buildHello(),`APPAIRAGE (${i+1})`);
-    if(await waitHello(3000)){ setAuth(true); log(`Jeton mémorisé : ${getToken()}`); return; } }
-  log('Échec appairage.');
+              `HELLO (token ${token})`);
+  if(await waitHello(3000)){ setAuth(true); log(`Authenticated with token ${token}.`); return; }
+  log('No ack; cold pairing…');
+  for(let i=0;i<8;i++){ await write(buildHello(),`PAIRING (${i+1})`);
+    if(await waitHello(3000)){ setAuth(true); log(`Token cached: ${getToken()}`); return; } }
+  log('Pairing failed.');
 }
 
 async function connect(){
@@ -186,8 +186,8 @@ async function connect(){
       filters:[{namePrefix:'AC6000'}],
       optionalServices:[UUID.svcNotify, UUID.svcWrite],
     });
-    device.addEventListener('gattserverdisconnected',()=>{setState(false);setAuth(false);log('Déconnecté.');});
-    log(`Connexion à ${device.name}…`);
+    device.addEventListener('gattserverdisconnected',()=>{setState(false);setAuth(false);log('Disconnected.');});
+    log(`Connecting to ${device.name}…`);
     const server = await device.gatt.connect();
     const nSvc = await server.getPrimaryService(UUID.svcNotify);
     const nCh  = await nSvc.getCharacteristic(UUID.chNotify);
@@ -195,9 +195,9 @@ async function connect(){
     nCh.addEventListener('characteristicvaluechanged', onNotify);
     const wSvc = await server.getPrimaryService(UUID.svcWrite);
     writeCh = await wSvc.getCharacteristic(UUID.chWrite);
-    setState(true); log('Connecté, notifications actives.');
+    setState(true); log('Connected, notifications active.');
     await authenticate();
-  }catch(e){ log('Erreur: '+e.message); }
+  }catch(e){ log('Error: '+e.message); }
 }
 
 function renderAmmo(){
@@ -206,7 +206,7 @@ function renderAmmo(){
     const r=ammo[s];
     tb.insertAdjacentHTML('beforeend',
       `<tr><td>${s}</td><td>${r.grams.toFixed(2)} g</td>
-       <td><button class="secondary sel" data-slot="${s}">sélectionner</button></td></tr>`);
+       <td><button class="secondary sel" data-slot="${s}">select</button></td></tr>`);
   }
   tb.querySelectorAll('.sel').forEach(b=>b.onclick=async()=>{
     await write(buildSelect(+b.dataset.slot),`SELECT slot ${b.dataset.slot}`); });
@@ -221,8 +221,8 @@ async function setWeight(){
   await write(buildSetWeight(slot,grams,cur.group,cur.field2),`SET slot ${slot} → ${grams} g`);
   await new Promise(r=>setTimeout(r,250));
   const other = [1,2,3,4,5].find(x=>x!==slot);
-  await write(buildSelect(other),`SELECT autre ${other}`); await new Promise(r=>setTimeout(r,250));
-  await write(buildSelect(slot),`SELECT retour ${slot}`);   await new Promise(r=>setTimeout(r,250));
+  await write(buildSelect(other),`SELECT other ${other}`); await new Promise(r=>setTimeout(r,250));
+  await write(buildSelect(slot),`SELECT back ${slot}`);    await new Promise(r=>setTimeout(r,250));
   await readAmmo();
 }
 
@@ -233,7 +233,7 @@ $('#setWeight').onclick=setWeight;
 $('#clearLog').onclick=()=>$('#log').textContent='';
 
 if(!navigator.bluetooth){
-  log('Web Bluetooth indisponible : utilise Chrome/Edge sur desktop ou Android (pas iOS), en https/localhost.');
+  log('Web Bluetooth unavailable: use Chrome/Edge on desktop or Android (not iOS), over https/localhost.');
   $('#connect').disabled=true;
 }
 </script>

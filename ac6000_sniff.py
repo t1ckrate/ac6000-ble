@@ -1,37 +1,37 @@
 #!/usr/bin/env python3
 """
-Sniffer / client BLE pour chronographe Acetech AC6000.
+BLE sniffer / client for the Acetech AC6000 chronograph.
 
-Protocole (reconstitué depuis une capture PacketLogger de l'app AceSoft) :
+Protocol (reconstructed from a PacketLogger capture of the AceSoft app):
 
-  Trame : AA | LEN | CMD | payload... | CHECKSUM
-    AA       = octet de synchro (0xAA)
-    LEN      = longueur totale de la trame (AA et CHECKSUM compris)
-    CMD      = octet de commande
-    CHECKSUM = (0x8B + somme(LEN..dernier octet de payload)) & 0xFF
+  Frame: AA | LEN | CMD | payload... | CHECKSUM
+    AA       = sync byte (0xAA)
+    LEN      = total frame length (including AA and CHECKSUM)
+    CMD      = command byte
+    CHECKSUM = (0x8B + sum(LEN..last payload byte)) & 0xFF
 
-  GATT :
-    NOTIFY : service 5cde0c3d-... / char 3337e46e-...   (trames DEV->APP)
-    WRITE  : service 53c47fe1-... / char 9c6aa1ee-...   (write-without-response)
+  GATT:
+    NOTIFY: service 5cde0c3d-... / char 3337e46e-...   (DEV->APP frames)
+    WRITE : service 53c47fe1-... / char 9c6aa1ee-...   (write-without-response)
 
-  Commandes connues :
-    0x4B  ouverture / "hello"        (app envoie aa064bdf02dc)
-    0x47  lecture d'un record stocké (par groupe, index)
-    0x49  numéro de série            -> ASCII
-    0x56  version firmware           -> ASCII
-    0x62  batterie
-    0x52  RAPPORT DE TIR EN DIRECT   (spontané) : payload 00 00 | <v 16b LE> | 00 00
-          La valeur 16 bits (little-endian) = VITESSE en m/s x 100 (cm/s).
-          m/s = valeur / 100 ; fps = m/s * 3.28084. (Validé sur 2 captures.)
+  Known commands:
+    0x4B  hello / pairing token      (app sends aa064bdf02dc)
+    0x47  read a stored record       (by group, index)
+    0x49  serial number             -> ASCII
+    0x56  firmware version          -> ASCII
+    0x62  battery
+    0x52  LIVE SHOT REPORT           (spontaneous): payload 00 00 | <v 16b LE> | 00 00
+          The 16-bit value (little-endian) = SPEED in m/s x 100 (cm/s).
+          m/s = value / 100 ; fps = m/s * 3.28084. (Validated on 2 captures.)
 
-  Appairage (handshake applicatif, PAS de bonding OS) :
+  Pairing (application-level handshake, NOT OS bonding):
     App -> chrono : aa06 4b 0000 fb   (HELLO, payload 00 00)
-    chrono -> App : aa06 4b df02 dc   (réponse, df02 = jeton de l'appareil)
+    chrono -> App : aa06 4b df02 dc   (reply, df02 = device token)
 
-Usage :
-  python ac6000_sniff.py                 # scan + connexion + hello + capture live
+Usage:
+  python ac6000_sniff.py                 # scan + connect + hello + live capture
   python ac6000_sniff.py --scan-only
-  python ac6000_sniff.py --no-wake       # ne pas envoyer le HELLO
+  python ac6000_sniff.py --no-wake       # do not send the HELLO
 """
 
 import argparse
@@ -49,7 +49,7 @@ KNOWN_UUIDS = {
     NOTIFY_UUID, WRITE_UUID,
 }
 
-# Fichier de cache du jeton d'appairage, par adresse d'appareil.
+# Pairing-token cache file, keyed by device address.
 TOKEN_FILE = "ac6000_token.json"
 
 CMD_NAMES = {
@@ -64,7 +64,7 @@ def now():
 
 
 def checksum(body: bytes) -> int:
-    """body = LEN..payload (sans AA ni checksum)."""
+    """body = LEN..payload (without AA or checksum)."""
     return (0x8b + sum(body)) & 0xff
 
 
@@ -80,17 +80,17 @@ def verify(frame: bytes) -> bool:
     return checksum(frame[1:-1]) == frame[-1] or (sum(frame[:-1]) & 0xff) == frame[-1]
 
 
-# ---- Table de munitions (poids de bille) --------------------------------
-# Enregistrement 0x47/0x53 (11 octets) :
+# ---- Ammo table (BB weight) --------------------------------------------
+# Record 0x47/0x53 (11 bytes):
 #   AA 0B CMD | 00 GG SS | F2(2 LE) | WW(2 LE) | CS
-#   GG = groupe/profil, SS = slot (1..5), F2 = champ secondaire (600),
-#   WW = poids de bille en grammes x 100.
+#   GG = group/profile, SS = slot (1..5), F2 = secondary field (600),
+#   WW = BB weight in grams x 100.
 
 def parse_ammo_record(frame: bytes):
-    """Retourne (group, slot, field2, grammes) pour une trame 0x47/0x53 de 11 o."""
+    """Return (group, slot, field2, grams) for an 11-byte 0x47/0x53 frame."""
     if len(frame) < 11 or frame[2] not in (0x47, 0x53):
         return None
-    p = frame[3:-1]  # 7 octets : 00 GG SS F2lo F2hi Wlo Whi
+    p = frame[3:-1]  # 7 bytes: 00 GG SS F2lo F2hi Wlo Whi
     group = p[1]
     slot = p[2]
     field2 = int.from_bytes(p[3:5], "little")
@@ -99,18 +99,18 @@ def parse_ammo_record(frame: bytes):
 
 
 def build_read_ammo(slot: int, group_req: int = 0x01) -> bytes:
-    """Requête de lecture d'un slot de munition (0x47)."""
+    """Request to read an ammo slot (0x47)."""
     return build(0x47, bytes([group_req, slot]))
 
 
 def build_select_slot(slot: int, group_req: int = 0x01) -> bytes:
-    """Sélectionne le slot de munition actif (0x59). Payload = groupe, slot."""
+    """Select the active ammo slot (0x59). Payload = group, slot."""
     return build(0x59, bytes([group_req, slot]))
 
 
 def build_hello(token: bytes = b"\x00\x00") -> bytes:
-    """HELLO 0x4B. token=00 00 -> demande le jeton ; token=df02 -> s'authentifie.
-    (Le 0x4B utilise le checksum variante = somme de tous les octets, AA compris.)"""
+    """HELLO 0x4B. token=00 00 -> request the token ; token=df02 -> authenticate.
+    (0x4B uses the checksum variant = sum of all bytes, AA included.)"""
     body = bytes([6, 0x4B]) + token
     frame = bytes([0xAA]) + body
     return frame + bytes([sum(frame) & 0xFF])
@@ -141,11 +141,11 @@ def save_token(address: str, token: bytes):
 
 def build_set_weight(slot: int, grams: float, group: int = 0x41,
                      field2: int = 600) -> bytes:
-    """Construit la commande 0x53 qui fixe le poids de bille d'un slot.
+    """Build the 0x53 command that sets a slot's BB weight.
 
-    grams : grammage de la bille (ex. 0.20, 0.25, 0.28, 0.32, 0.40).
-    group/field2 : à reprendre d'une lecture 0x47 préalable pour coller à
-    l'état de l'appareil (défauts observés dans la capture).
+    grams : BB weight (e.g. 0.20, 0.25, 0.28, 0.32, 0.40).
+    group/field2 : take these from a prior 0x47 read to match the device state
+    (defaults are the values observed in the capture).
     """
     w = round(grams * 100)
     payload = bytes([0x00, group, slot]) + int(field2).to_bytes(2, "little") \
@@ -164,9 +164,9 @@ class Logger:
 
 
 def decode_frame(frame: bytes, k: float | None):
-    """Retourne une chaîne lisible pour une trame AA-framée."""
+    """Return a human-readable string for an AA-framed frame."""
     if len(frame) < 4 or frame[0] != 0xAA:
-        return f"(non-framé) {frame.hex()}"
+        return f"(unframed) {frame.hex()}"
     length, cmd = frame[1], frame[2]
     payload = frame[3:-1]
     name = CMD_NAMES.get(cmd, f"0x{cmd:02x}")
@@ -175,16 +175,16 @@ def decode_frame(frame: bytes, k: float | None):
     if cmd == 0x52 and len(payload) >= 4:
         raw = int.from_bytes(payload[2:6] if len(payload) >= 6 else payload[2:4], "little")
         mps = raw / 100.0
-        extra = f"  *** TIR: {mps:.2f} m/s  =  {mps*3.28084:.1f} fps  (brut={raw})"
+        extra = f"  *** SHOT: {mps:.2f} m/s  =  {mps*3.28084:.1f} fps  (raw={raw})"
     elif cmd in (0x47, 0x53) and len(frame) >= 11:
         rec = parse_ammo_record(frame)
         if rec:
             g, s, f2, grams = rec
             gi = chr(g) if 32 <= g < 127 else "?"
-            verbe = "SET" if cmd == 0x53 else "AMMO"
-            extra = f"  {verbe} groupe='{gi}' slot={s} poids={grams:.2f} g (f2={f2})"
+            verb = "SET" if cmd == 0x53 else "AMMO"
+            extra = f"  {verb} group='{gi}' slot={s} weight={grams:.2f} g (f2={f2})"
     elif cmd == 0x59 and len(payload) >= 2:
-        extra = f"  SELECT groupe={payload[0]} slot={payload[1]}"
+        extra = f"  SELECT group={payload[0]} slot={payload[1]}"
     elif cmd in (0x49, 0x56) and payload:
         try:
             extra = f"  ascii={payload.decode('ascii', 'replace').strip()!r}"
@@ -194,7 +194,7 @@ def decode_frame(frame: bytes, k: float | None):
 
 
 async def do_scan(name_filter, timeout):
-    print(f"[{now()}] Scan BLE ({timeout}s)...")
+    print(f"[{now()}] BLE scan ({timeout}s)...")
     results = await BleakScanner.discover(timeout=timeout, return_adv=True)
     matches = []
     for device, adv in results.values():
@@ -217,20 +217,20 @@ async def run(args):
         if args.scan_only:
             return
         if not matches:
-            print(f"Aucun périphérique {args.name!r}. Chrono allumé + BT activé + app déconnectée ?")
+            print(f"No device matching {args.name!r}. Chrono on + BT enabled + official app disconnected?")
             return
         target = matches[0]
 
     disconnect_evt = asyncio.Event()
 
     def on_disconnect(_c):
-        print(f"[{now()}] !! Déconnecté")
+        print(f"[{now()}] !! Disconnected")
         logger.log("disconnect")
         disconnect_evt.set()
 
-    print(f"[{now()}] Connexion à {getattr(target,'address',target)} ...")
+    print(f"[{now()}] Connecting to {getattr(target,'address',target)} ...")
     async with BleakClient(target, disconnected_callback=on_disconnect, timeout=30) as client:
-        print(f"[{now()}] Connecté.")
+        print(f"[{now()}] Connected.")
         logger.log("connect", address=str(getattr(target, "address", target)))
 
         ammo_table = {}  # slot -> (group, field2, grams)
@@ -243,10 +243,10 @@ async def run(args):
             print(f"            -> {decode_frame(data, args.k)}")
             logger.log("notify", hex=data.hex(), decoded=decode_frame(data, args.k))
             if len(data) >= 4 and data[0] == 0xAA and data[2] == 0x4B:
-                learned_token.append(data[3:-1])  # jeton volontaire du chrono
+                learned_token.append(data[3:-1])  # token volunteered by the chrono
                 hello_evt.set()
             if len(data) >= 4 and data[0] == 0xAA and data[2] == 0x41:
-                hello_evt.set()  # STATUS : ack rapide de notre HELLO authentifié
+                hello_evt.set()  # STATUS: fast ack of our authenticated HELLO
             rec = parse_ammo_record(data)
             if rec:
                 g, s, f2, grams = rec
@@ -259,24 +259,24 @@ async def run(args):
             await asyncio.sleep(0.25)
 
         await client.start_notify(NOTIFY_UUID, cb)
-        print(f"[{now()}] Abonné aux notifications.")
+        print(f"[{now()}] Subscribed to notifications.")
 
         addr = str(getattr(target, "address", target))
         if not args.no_wake:
             token = bytes.fromhex(args.token) if args.token else load_token(addr)
             if token:
-                # Jeton connu : on s'authentifie direct -> ack STATUS immédiat.
-                await write(build_hello(token), f"HELLO (jeton {token.hex()})")
+                # Known token: authenticate directly -> immediate STATUS ack.
+                await write(build_hello(token), f"HELLO (token {token.hex()})")
                 try:
                     await asyncio.wait_for(hello_evt.wait(), timeout=3.0)
-                    print(f"[{now()}] Authentifié avec le jeton mémorisé {token.hex()}.")
+                    print(f"[{now()}] Authenticated with cached token {token.hex()}.")
                 except asyncio.TimeoutError:
-                    print(f"[{now()}] (jeton {token.hex()} sans ack ; nouvel appairage)")
+                    print(f"[{now()}] (token {token.hex()} not acked; re-pairing)")
                     token = None
             if not token:
-                # Pas de jeton : appairage (HELLO 00 00), le chrono renvoie le sien.
+                # No token: pair (HELLO 00 00), the chrono returns its own.
                 for attempt in range(8):
-                    await write(build_hello(), f"APPAIRAGE ({attempt+1})")
+                    await write(build_hello(), f"PAIRING ({attempt+1})")
                     try:
                         await asyncio.wait_for(hello_evt.wait(), timeout=3.0)
                         break
@@ -284,67 +284,67 @@ async def run(args):
                         continue
                 if learned_token:
                     save_token(addr, learned_token[-1])
-                    print(f"[{now()}] Jeton appris et mémorisé : {learned_token[-1].hex()}")
+                    print(f"[{now()}] Token learned and cached: {learned_token[-1].hex()}")
                 else:
-                    print(f"[{now()}] (pas de jeton reçu ; les écritures peuvent échouer)")
+                    print(f"[{now()}] (no token received; writes may be ignored)")
 
-        # Lire la table de munitions (poids de bille) si demandé ou avant un set.
+        # Read the ammo table (BB weight) if requested or before a set.
         if args.read_ammo or args.set_weight:
-            print(f"[{now()}] Lecture de la table de munitions (slots 1..5)...")
+            print(f"[{now()}] Reading the ammo table (slots 1..5)...")
             for s in range(1, 6):
                 await write(build_read_ammo(s, args.group_req), f"READ ammo {s}")
             await asyncio.sleep(0.4)
-            print("  --- Table de munitions ---")
+            print("  --- Ammo table ---")
             for s in sorted(ammo_table):
                 g, f2, grams = ammo_table[s]
-                print(f"    slot {s}: {grams:.2f} g  (groupe={chr(g) if 32<=g<127 else g}, f2={f2})")
+                print(f"    slot {s}: {grams:.2f} g  (group={chr(g) if 32<=g<127 else g}, f2={f2})")
 
-        # Régler un grammage : --set-weight SLOT:GRAMS (ex. 3:0.25)
+        # Set a weight: --set-weight SLOT:GRAMS (e.g. 3:0.25)
         if args.set_weight:
             slot_s, grams_s = args.set_weight.split(":")
             slot, grams = int(slot_s), float(grams_s)
-            # reprendre groupe/field2 de la lecture pour coller à l'appareil
+            # take group/field2 from the read to match the device
             if slot in ammo_table:
                 group, field2, _ = ammo_table[slot]
             else:
                 group, field2 = args.group, args.field2
-                print(f"  (slot {slot} non lu, valeurs par défaut groupe={group:#x} f2={field2})")
+                print(f"  (slot {slot} not read, using defaults group={group:#x} f2={field2})")
             frame = build_set_weight(slot, grams, group=group, field2=field2)
             print(f"[{now()}] SET slot {slot} -> {grams:.2f} g")
             await write(frame, "SET weight")
             await asyncio.sleep(0.3)
 
-            # Re-sélection (commande 0x59) : le chrono n'applique le slot actif
-            # que si on re-sélectionne. On sélectionne un AUTRE slot puis on
-            # revient sur le slot cible.
+            # Re-selection (command 0x59): the chrono only applies the active slot
+            # when it is re-selected. Select ANOTHER slot then return to the
+            # target slot.
             if not args.no_reselect:
                 other = next((s for s in sorted(ammo_table) if s != slot), None)
                 if other is None:
                     other = slot + 1 if slot < 5 else 1
                 await write(build_select_slot(other, args.group_req),
-                            f"SELECT autre slot {other}")
+                            f"SELECT other slot {other}")
                 await asyncio.sleep(0.3)
                 await write(build_select_slot(slot, args.group_req),
-                            f"SELECT retour slot {slot}")
+                            f"SELECT back slot {slot}")
                 await asyncio.sleep(0.3)
 
             await write(build_read_ammo(slot, args.group_req), f"RE-READ ammo {slot}")
             await asyncio.sleep(0.4)
             if slot in ammo_table:
-                print(f"  -> slot {slot} vaut maintenant {ammo_table[slot][2]:.2f} g")
-                print("  (vérifie sur l'écran du chrono que le slot actif est bien à jour)")
+                print(f"  -> slot {slot} is now {ammo_table[slot][2]:.2f} g")
+                print("  (check on the chrono screen that the active slot is updated)")
 
-        # Sélection simple d'un slot actif (0x59), sans changer de poids.
+        # Plain selection of an active slot (0x59), without changing the weight.
         if args.select_slot is not None:
             s = args.select_slot
             await write(build_select_slot(s, args.group_req), f"SELECT slot {s}")
             await asyncio.sleep(0.3)
-            print(f"  -> slot {s} sélectionné (vérifie l'écran du chrono)")
+            print(f"  -> slot {s} selected (check the chrono screen)")
 
         print(
-            "\n=== Capture en direct ===\n"
-            "Mets le chrono en mode VITESSE (fps ou m/s), tire, puis tape la\n"
-            "vitesse affichée + Entrée (ex: '328.5'). 'q' pour quitter.\n"
+            "\n=== Live capture ===\n"
+            "Put the chrono in SPEED mode (fps or m/s), fire, then type the\n"
+            "displayed speed + Enter (e.g. '328.5'). 'q' to quit.\n"
         )
         loop = asyncio.get_running_loop()
         while not disconnect_evt.is_set():
@@ -363,8 +363,8 @@ async def run(args):
                 break
             if line:
                 rec = logger.log("marker", text=line)
-                print(f"[{rec['ts']}] MARQUEUR: {line}")
-    print(f"[{now()}] Fin. Log: {args.log}")
+                print(f"[{rec['ts']}] MARKER: {line}")
+    print(f"[{now()}] Done. Log: {args.log}")
 
 
 def main():
@@ -373,27 +373,27 @@ def main():
     p.add_argument("--address")
     p.add_argument("--scan-only", action="store_true")
     p.add_argument("--scan-timeout", type=float, default=8.0)
-    p.add_argument("--no-wake", action="store_true", help="ne pas envoyer la séquence d'ouverture 0x4B")
-    p.add_argument("--token", help="jeton d'appairage en hex (ex. df02) ; sinon cache/appairage auto")
-    p.add_argument("--read-ammo", action="store_true", help="lire la table de munitions (poids de bille)")
-    p.add_argument("--set-weight", metavar="SLOT:GRAMMES",
-                   help="régler le poids d'un slot, ex. 3:0.25")
+    p.add_argument("--no-wake", action="store_true", help="do not send the 0x4B HELLO sequence")
+    p.add_argument("--token", help="pairing token in hex (e.g. df02); otherwise cache/auto-pair")
+    p.add_argument("--read-ammo", action="store_true", help="read the ammo table (BB weights)")
+    p.add_argument("--set-weight", metavar="SLOT:GRAMS",
+                   help="set a slot's weight, e.g. 3:0.25")
     p.add_argument("--no-reselect", action="store_true",
-                   help="ne pas faire la re-sélection (autre slot puis retour) après un set")
+                   help="skip the re-selection (other slot then back) after a set")
     p.add_argument("--select-slot", type=int, metavar="N",
-                   help="sélectionner le slot de munition actif (0x59), ex. 3")
+                   help="select the active ammo slot (0x59), e.g. 3")
     p.add_argument("--group", type=lambda x: int(x, 0), default=0x41,
-                   help="groupe/profil par défaut si slot non lu (déf 0x41)")
+                   help="default group/profile if the slot wasn't read (default 0x41)")
     p.add_argument("--group-req", type=lambda x: int(x, 0), default=0x01,
-                   help="octet groupe des requêtes de lecture 0x47 (déf 0x01)")
-    p.add_argument("--field2", type=int, default=600, help="champ secondaire (déf 600)")
-    p.add_argument("--k", type=float, default=None, help="(inutilisé) ancien paramètre")
+                   help="group byte for 0x47 read requests (default 0x01)")
+    p.add_argument("--field2", type=int, default=600, help="secondary field (default 600)")
+    p.add_argument("--k", type=float, default=None, help="(unused) legacy parameter")
     p.add_argument("--log", default="ac6000_capture.jsonl")
     args = p.parse_args()
     try:
         asyncio.run(run(args))
     except KeyboardInterrupt:
-        print("\nInterrompu.")
+        print("\nInterrupted.")
 
 
 if __name__ == "__main__":

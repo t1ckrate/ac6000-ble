@@ -1,10 +1,10 @@
-# Jeton d'appairage (spécifique à l'appareil, privé)
+# Pairing token (device-specific, private)
 ac6000_token.json
 
-# Captures Bluetooth brutes (contiennent des données perso : adresses BT, etc.)
+# Raw Bluetooth captures (contain personal data: BT addresses, etc.)
 *.pklg
 
-# Logs de capture
+# Capture logs
 *.jsonl
 
 # Python

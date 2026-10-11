@@ -1,32 +1,31 @@
 # ac6000-ble
 
-Pilote d'interopérabilité **non officiel** pour le chronographe airsoft
-**Acetech AC6000-BT**, obtenu par rétro-ingénierie du protocole BLE (observation
-du trafic Bluetooth + chaînes en clair de l'app). Permet de lire les tirs, la
-table de munitions et de régler le grammage de bille, en Python (bleak) ou
-directement dans Chrome (Web Bluetooth).
+**Unofficial** interoperability driver for the **Acetech AC6000-BT** airsoft
+chronograph, obtained by reverse engineering its BLE protocol (Bluetooth traffic
+observation + clear-text strings from the app). Read shots, read the ammo table
+and set the BB weight — from Python (bleak) or directly in Chrome (Web Bluetooth).
 
-> ⚠️ **Projet non affilié à Acetech.** Marques et firmware appartiennent à leurs
-> propriétaires. Réalisé pour l'interopérabilité avec mon propre matériel
-> (France/UE : CPI art. L122-6-1 ; directive 2009/24/CE art. 6). Aucun code ni
-> binaire de l'application d'origine n'est inclus ni redistribué.
+> ⚠️ **Not affiliated with Acetech.** Trademarks and firmware belong to their
+> respective owners. Built for interoperability with my own hardware (France/EU:
+> IP Code art. L122-6-1; Directive 2009/24/EC art. 6). No code or binary from the
+> original application is included or redistributed.
 >
-> ⚠️ **Instrument de mesure.** Modifier le grammage change le calcul d'énergie
-> (joules) affiché. N'utilise pas ces réglages pour contourner une vérification
-> de conformité (limites de terrain). **Aucune garantie** — usage à tes risques.
+> ⚠️ **Measuring instrument.** Changing the BB weight changes the displayed energy
+> (joules). Do not use these settings to bypass a compliance check (field joule
+> limits). **No warranty** — use at your own risk.
 
-Testé avec le firmware **1.017** (AC6000-BT5580). Un autre firmware peut différer.
+Tested with firmware **1.017** (AC6000-BT5580). Other firmware may differ.
 
-## Fonctions
+## Features
 
-- Appairage applicatif rapide (jeton mémorisé, pas de ré-appairage à froid)
-- Décodage des **tirs en direct** (m/s + fps)
-- Lecture de la **table de munitions** (5 slots, poids de bille)
-- **Écriture du grammage** d'un slot + re-sélection du slot actif
-- Client **Python** (`ac6000_sniff.py`) et **Web Bluetooth** (`ac6000_web.html`)
-- Parseur de captures PacketLogger (`tools/pklg_parse.py`)
+- Fast application-level pairing (token cached, no cold re-pairing)
+- Decoding of **live shots** (m/s + fps)
+- Reading the **ammo table** (5 slots, BB weight)
+- **Writing a slot's weight** + re-selecting the active slot
+- **Python** (`ac6000_sniff.py`) and **Web Bluetooth** (`ac6000_web.html`) clients
+- PacketLogger capture parser (`tools/pklg_parse.py`)
 
-## Installation (Python)
+## Install (Python)
 
 ```bash
 python3 -m venv .venv
@@ -34,69 +33,69 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Utilisation (Python)
+## Usage (Python)
 
-Chrono allumé, Bluetooth activé, application officielle **déconnectée**
-(une seule connexion BLE à la fois).
+Chrono powered on, Bluetooth enabled, official app **disconnected** (only one BLE
+connection at a time).
 
 ```bash
-# Scanner et lister les périphériques
+# Scan and list devices
 python ac6000_sniff.py --scan-only
 
-# Se connecter et logger les tirs en direct (m/s + fps)
+# Connect and log live shots (m/s + fps)
 python ac6000_sniff.py
 
-# Lire la table de munitions
+# Read the ammo table
 python ac6000_sniff.py --read-ammo
 
-# Régler le poids d'un slot (grammes) + re-sélection auto
+# Set a slot's weight (grams) + automatic re-selection
 python ac6000_sniff.py --set-weight 3:0.25
 
-# Sélectionner le slot de munition actif
+# Select the active ammo slot
 python ac6000_sniff.py --select-slot 3
 ```
 
-Pendant la capture live, tape la vitesse affichée sur le chrono + Entrée pour
-poser un marqueur horodaté dans `ac6000_capture.jsonl`. `q` pour quitter.
+During live capture, type the speed shown on the chrono + Enter to drop a
+timestamped marker into `ac6000_capture.jsonl`. Press `q` to quit.
 
-## Utilisation (Chrome / Web Bluetooth)
+## Usage (Chrome / Web Bluetooth)
 
-`ac6000_web.html` tourne dans **Chrome ou Edge** (desktop ou Android). **Pas sur
-iOS** (WebKit ne supporte pas Web Bluetooth). Contexte sécurisé requis :
+`ac6000_web.html` runs in **Chrome or Edge** (desktop or Android). **Not on iOS**
+(WebKit has no Web Bluetooth). A secure context is required:
 
 ```bash
 python3 -m http.server 8000
-# puis ouvrir http://localhost:8000/ac6000_web.html dans Chrome
+# then open http://localhost:8000/ac6000_web.html in Chrome
 ```
 
-Clique **Connecter**, choisis le `AC6000-BT…`, et utilise les boutons. Le jeton
-d'appairage est mémorisé dans le `localStorage` du navigateur.
+Click **Connect**, pick the `AC6000-BT…` device, and use the buttons. The pairing
+token is cached in the browser's `localStorage`.
 
-## Protocole
+## Protocol
 
-Résumé complet dans [PROTOCOLE.md](PROTOCOLE.md). En bref :
+Full write-up in [PROTOCOL.md](PROTOCOL.md). In short:
 
-- Trame `AA | LEN | CMD | payload | CHECKSUM`, `CHECKSUM=(0x8B+somme(LEN..payload))&0xFF`
-- Appairage : HELLO `0x4B` ↔ jeton de l'appareil ; obligatoire avant toute écriture
-- Tir : `0x52` (spontané), vitesse = valeur16 LE / 100 m/s
-- Munitions : lecture `0x47`, écriture poids `0x53` (g×100), sélection active `0x59`
+- Frame `AA | LEN | CMD | payload | CHECKSUM`, `CHECKSUM=(0x8B+sum(LEN..payload))&0xFF`
+- Pairing: HELLO `0x4B` ↔ device token; required before any write
+- Shot: `0x52` (spontaneous), speed = value16 LE / 100 m/s
+- Ammo: read `0x47`, write weight `0x53` (g×100), select active `0x59`
 
 ## Tests
 
-Tests du protocole (checksums, construction/analyse des trames) **sans matériel**,
-validés contre des trames réelles capturées :
+Protocol tests (checksums, frame build/parse) with **no hardware**, validated
+against real captured frames:
 
 ```bash
 python test_protocol.py
 ```
 
-## Analyser une capture PacketLogger
+## Parsing a PacketLogger capture
 
 ```bash
-python tools/pklg_parse.py capture.pklg 0xe 0x12   # filtre sur les handles chrono
+python tools/pklg_parse.py capture.pklg 0xe 0x12   # filter on the chrono handles
 ```
-Auto-détecte l'endianness (captures macOS big-endian / iOS little-endian).
+Auto-detects endianness (macOS big-endian / iOS little-endian captures).
 
-## Licence
+## License
 
-MIT — voir [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

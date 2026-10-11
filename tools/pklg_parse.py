@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Parseur PacketLogger (.pklg) -> trafic ATT BLE.
+"""PacketLogger (.pklg) parser -> BLE ATT traffic.
 
-Record PacketLogger:
-  u32 be length (= 9 + len(payload))
-  u32 be sec, u32 be usec
-  u8  type (0x00 cmd envoyé, 0x01 event, 0x02 ACL envoyé, 0x03 ACL reçu)
+Usage: python pklg_parse.py capture.pklg [handle ...]
+  e.g. python pklg_parse.py capture.pklg 0xe 0x12   (filter on the chrono handles)
+
+PacketLogger record:
+  u32 length (= 9 + len(payload))
+  u32 sec, u32 usec
+  u8  type (0x00 sent cmd, 0x01 event, 0x02 sent ACL, 0x03 received ACL)
   payload
+Endianness is auto-detected (macOS big-endian / iOS little-endian captures).
 
 ACL payload (HCI ACL):
   u16 le handle+flags ; u16 le data_len
-  L2CAP: u16 le len ; u16 le cid ; si cid==4 -> ATT PDU
+  L2CAP: u16 le len ; u16 le cid ; if cid==4 -> ATT PDU
 """
 import struct
 import sys
@@ -30,7 +34,7 @@ ATT_OP = {
 def _detect_endian(buf):
     (be,) = struct.unpack_from(">I", buf, 0)
     (le,) = struct.unpack_from("<I", buf, 0)
-    # longueur plausible = la plus petite cohérente
+    # plausible length = the smallest consistent one
     if 9 <= be <= len(buf):
         return ">"
     if 9 <= le <= len(buf):
@@ -54,7 +58,7 @@ def records(buf):
 
 
 def parse_att(payload):
-    """payload = HCI ACL; retourne (acl_handle, pb, att_bytes) ou None."""
+    """payload = HCI ACL; returns (acl_handle, pb, att_bytes) or None."""
     if len(payload) < 8:
         return None
     hf, dlen = struct.unpack_from("<HH", payload, 0)
@@ -105,9 +109,9 @@ def main():
         seen.append((ts, direction, ATT_OP.get(op, hex(op)), handle, value))
 
     print(f"# {path}")
-    print(f"# ATT PDUs par opcode: {op_counts}")
-    print(f"# handles ATT vus (count): { {hex(k):v for k,v in sorted(handle_counts.items())} }")
-    print(f"# lignes retenues: {len(seen)}")
+    print(f"# ATT PDUs by opcode: {op_counts}")
+    print(f"# ATT handles seen (count): { {hex(k):v for k,v in sorted(handle_counts.items())} }")
+    print(f"# lines kept: {len(seen)}")
     print("-" * 70)
     for ts, d, op, h, v in seen:
         hs = hex(h) if h is not None else "-"
